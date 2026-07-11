@@ -108,9 +108,16 @@ def cmd_start(args: argparse.Namespace) -> int:
     state["ssid"] = args.ssid
     state["pf_was_enabled"] = firewall.is_pf_enabled()
 
-    print(hotspot.setup_guide(args.ssid, args.password))
-    hotspot.configure_sharing(source, dry_run=args.dry_run)
-    hotspot.start_sharing(dry_run=args.dry_run)
+    if args.skip_sharing:
+        # Internet Sharing is already running (e.g. enabled via System Settings).
+        # Touching the NAT plist / daemon here would restart sharing and briefly
+        # drop the WiFi AP, disconnecting connected clients. Leave it untouched.
+        print("Skipping Internet Sharing setup (--skip-sharing); "
+              "using the already-running hotspot.")
+    else:
+        print(hotspot.setup_guide(args.ssid, args.password))
+        hotspot.configure_sharing(source, dry_run=args.dry_run)
+        hotspot.start_sharing(dry_run=args.dry_run)
 
     bridge = args.bridge or hotspot.detect_bridge(dry_run=args.dry_run)
     if not bridge and not args.dry_run:
@@ -314,6 +321,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_start.add_argument("--source", help="Uplink interface (auto-detected).")
     p_start.add_argument("--wifi", default="en1", help="WiFi interface for sharing.")
     p_start.add_argument("--bridge", help="Override NAT bridge interface detection.")
+    p_start.add_argument(
+        "--skip-sharing",
+        action="store_true",
+        help="Do not (re)configure Internet Sharing; use the hotspot that is "
+             "already running. Prevents disconnecting connected clients.",
+    )
     p_start.add_argument(
         "--no-wait",
         action="store_true",
