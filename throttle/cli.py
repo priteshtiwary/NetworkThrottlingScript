@@ -1,6 +1,6 @@
 """Command-line interface and orchestration for mac-network-throttle.
 
-Subcommands: start, stop, status, throttle, block, unblock, list-devices.
+Subcommands: start, stop, status, throttle, block, unblock, list-devices, monitor.
 Each state-changing command rebuilds the full dnctl pipe set and pf anchor
 ruleset from persisted state (idempotent reconcile), so partial/overlapping
 changes never leave inconsistent kernel state.
@@ -15,7 +15,7 @@ import time
 from typing import List, Optional
 
 from . import devices as devices_mod
-from . import firewall, hotspot, throttle, utils
+from . import firewall, hotspot, monitor as monitor_mod, throttle, utils
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +299,50 @@ def cmd_list_devices(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_monitor(args: argparse.Namespace) -> int:
+    utils.require_root(dry_run=args.dry_run)
+    state = utils.load_state()
+
+    bridge = args.bridge or state.get("bridge_interface") or utils.get_bridge_interface()
+    if not bridge:
+        print("No bridge interface known. Run 'start' first or pass --bridge.",
+              file=sys.stderr)
+        return 1
+
+    device_ip = firewall.validate_ip_or_cidr(args.ip)
+    print(f"Capturing {device_ip} traffic on {bridge} for {args.duration}s "
+          f"(Ctrl-C to stop early)...")
+
+    endpoints = monitor_mod.monitor_device(
+        device_ip,
+        bridge,
+        duration=args.duration,
+        resolve=not args.no_resolve,
+        dry_run=args.dry_run,
+    )
+    if args.dry_run:
+        return 0
+
+    if not endpoints:
+        print("(no traffic captured — is the device active?)")
+        return 0
+
+    header = f"{'DEST IP':<18}{'PKTS':<7}{'PORTS':<14}{'HOSTNAME'}"
+    print(header)
+    print("-" * max(len(header), 60))
+    for endpoint in endpoints:
+        ports = ",".join(str(p) for p in sorted(endpoint.ports)[:4]) or "-"
+        host = endpoint.hostname or ("(private)" if endpoint.is_private else "-")
+        print(f"{endpoint.ip:<18}{endpoint.packets:<7}{ports:<14}{host}")
+
+    top = next((e for e in endpoints if not e.is_private), None)
+    if top:
+        print("\nTo block one of these destinations for this device, run:")
+        print(f"  sudo mac-throttle block --ip {device_ip} --block-ips {top.ip}")
+    return 0
+
+
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -393,6 +437,24 @@ def build_parser() -> argparse.ArgumentParser:
     # list-devices
     p_list = sub.add_parser("list-devices", help="List connected clients + rules.")
     p_list.set_defaults(func=cmd_list_devices)
+
+    # monitor
+    p_monitor = sub.add_parser(
+        "monitor",
+        help="Capture a device's traffic to reveal the destination IPs/CDNs it "
+             "talks to (so you can block them).",
+    )
+    p_monitor.add_argument("--ip", required=True, help="Device IP to monitor.")
+    p_monitor.add_argument(
+        "--duration", type=int, default=15, help="Capture seconds (default 15)."
+    )
+    p_monitor.add_argument("--bridge", help="Override NAT bridge interface.")
+    p_monitor.add_argument(
+        "--no-resolve",
+        action="store_true",
+        help="Skip reverse-DNS hostname lookups.",
+    )
+    p_monitor.set_defaults(func=cmd_monitor)
 
     return parser
 

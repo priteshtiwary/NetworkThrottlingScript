@@ -232,3 +232,36 @@ def test_start_without_bridge_returns_pending(fake_runner):
     fake_runner.set_response("ifconfig", stdout="")  # no bridge yet
     rc = cli.main(["start", "--no-wait", "--source", "en0"])
     assert rc == 2
+
+
+# ---------------------------------------------------------------------------
+# monitor
+# ---------------------------------------------------------------------------
+def test_monitor_command(fake_runner, tcpdump_output, capsys):
+    state = utils.default_state()
+    state["bridge_interface"] = "bridge100"
+    utils.save_state(state)
+    fake_runner.set_response("tcpdump", stdout=tcpdump_output)
+    fake_runner.set_response("host", stdout="")
+
+    rc = cli.main(["monitor", "--ip", "192.168.2.2", "--duration", "3", "--no-resolve"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "142.250.183.14" in out
+    # Suggests a ready-to-run block command for the busiest public endpoint.
+    assert "block --ip 192.168.2.2 --block-ips 142.250.183.14" in out
+
+
+def test_monitor_requires_bridge(fake_runner):
+    utils.save_state(utils.default_state())
+    fake_runner.set_response("ifconfig", stdout="")
+    rc = cli.main(["monitor", "--ip", "192.168.2.2"])
+    assert rc == 1
+
+
+def test_monitor_invalid_ip(fake_runner):
+    state = utils.default_state()
+    state["bridge_interface"] = "bridge100"
+    utils.save_state(state)
+    rc = cli.main(["monitor", "--ip", "999.1.1.1"])
+    assert rc == 1

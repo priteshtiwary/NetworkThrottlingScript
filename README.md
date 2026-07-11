@@ -170,6 +170,35 @@ mac-throttle list-devices   # IP, MAC, bandwidth, blocked + allow-only per clien
 mac-throttle status         # hotspot state, pf status, device count, active rules
 ```
 
+### Monitor a device's traffic
+
+Discover which destination IPs / CDNs a connected device (e.g. an STB) is
+talking to, so you know exactly what to block. The capture runs on the hotspot
+bridge filtered to that device — it only sees the device's traffic, never the
+Mac's own.
+
+```bash
+# Capture 192.168.2.2's destinations for 20 seconds, with reverse-DNS names:
+sudo mac-throttle monitor --ip 192.168.2.2 --duration 20
+
+# Skip hostname lookups (faster):
+sudo mac-throttle monitor --ip 192.168.2.2 --no-resolve
+```
+
+Output lists each remote endpoint with packet count, ports, and hostname,
+ordered by traffic volume, and prints a ready-to-run `block` command for the
+busiest public endpoint:
+
+```
+DEST IP           PKTS   PORTS         HOSTNAME
+------------------------------------------------------------
+142.250.183.14    412    443           bom12s.1e100.net
+23.53.140.11      88     443           a23-53-140-11.deploy.akamai.net
+
+To block one of these destinations for this device, run:
+  sudo mac-throttle block --ip 192.168.2.2 --block-ips 142.250.183.14
+```
+
 ### Teardown
 
 ```bash
@@ -192,6 +221,7 @@ off originally), and clear state — leaving no orphaned rules.
 | `block`        | Block destination IPs/CIDRs or enable whitelist mode.     |
 | `unblock`      | Remove block rules / exit whitelist mode.                 |
 | `list-devices` | List connected clients with IP, MAC, and rule state.      |
+| `monitor`      | Capture a device's traffic to reveal destination IPs/CDNs.|
 
 Global flag: `--dry-run` (print commands without executing).
 
@@ -237,6 +267,7 @@ python3 -m pytest tests/test_cli.py::test_start_no_wait -v   # a single test
 | [tests/test_devices.py](tests/test_devices.py)       | ARP table parsing, MAC normalization, incomplete-entry filtering, device discovery with `-i` fallback, state merge (including offline devices), interface detection from `route`/`ifconfig`. |
 | [tests/test_cli.py](tests/test_cli.py)               | Argument parsing and subcommand routing, state persistence, `--all` vs `--ip` targeting, `--dry-run`, root enforcement, `start` bridge-detection flow.                          |
 | [tests/test_cleanup.py](tests/test_cleanup.py)       | Teardown flushes anchor + pipes and restores original pf state, before/after rule capture, `stop` when nothing is running, `--keep-hotspot`, signal-handler cleanup.            |
+| [tests/test_monitor.py](tests/test_monitor.py)       | `tcpdump` output parsing, remote-endpoint aggregation by packet count, exclusion of the device/multicast/loopback, reverse-DNS parsing, capture command construction.           |
 | [tests/test_utils.py](tests/test_utils.py)           | Real subprocess execution + `--dry-run`, privilege checks, JSON state save/load/corruption handling, pipe allocation, logging.                                                  |
 
 Edge cases exercised include: invalid IPs, overlapping CIDR ranges, bandwidth of

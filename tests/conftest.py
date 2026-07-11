@@ -47,6 +47,11 @@ def route_default_output() -> str:
 
 
 @pytest.fixture
+def tcpdump_output() -> str:
+    return read_fixture("tcpdump_output.txt")
+
+
+@pytest.fixture
 def temp_state_dir(tmp_path, monkeypatch):
     """Point state + logs at a temporary directory for the test."""
 
@@ -95,7 +100,7 @@ def fake_runner(monkeypatch):
     """Install a :class:`FakeRunner` as the subprocess seam in every module."""
 
     runner = FakeRunner()
-    for module_name in ("utils", "devices", "throttle", "firewall", "hotspot", "cli"):
+    for module_name in ("utils", "devices", "throttle", "firewall", "hotspot", "monitor", "cli"):
         module = __import__(f"throttle.{module_name}", fromlist=["run_command"])
         if hasattr(module, "utils"):
             monkeypatch.setattr(module.utils, "run_command", runner, raising=True)
