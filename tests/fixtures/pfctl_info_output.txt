@@ -1,0 +1,9 @@
+Status: Enabled for 0 days 00:12:34           Debug: Urgent
+
+Interface Stats for en0             IPv4             IPv6
+  Bytes In                       12345678                0
+  Bytes Out                       8765432                0
+
+State Table                          Total             Rate
+  current entries                       42
+  searches                           99999            1.2/s

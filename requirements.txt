@@ -1,0 +1,7 @@
+# Runtime dependencies: none beyond the Python standard library.
+# The tool relies on macOS system utilities (pfctl, dnctl, arp, ifconfig,
+# networksetup, launchctl, defaults, route) rather than PyPI packages.
+
+# Development / testing only:
+pytest>=7.0
+pytest-cov>=4.0

@@ -1,0 +1,6 @@
+scrub-anchor "com.apple/*" all fragment reassemble
+anchor "com.apple/*" all
+dummynet in on bridge100 from 192.168.2.10 to any pipe 1
+dummynet out on bridge100 from any to 192.168.2.10 pipe 2
+block drop on bridge100 from 192.168.2.11 to 8.8.8.8
+block drop on bridge100 from 8.8.8.8 to 192.168.2.11
