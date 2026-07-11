@@ -137,25 +137,12 @@ def test_build_anchor_rules_multiple_devices():
 
 
 # ---------------------------------------------------------------------------
-# Augmented pf.conf
+# Anchor placement
 # ---------------------------------------------------------------------------
-def test_build_augmented_pf_conf_appends_anchors():
-    base = 'anchor "com.apple/*" all\n'
-    text = firewall.build_augmented_pf_conf(base)
-    assert f'dummynet-anchor "{utils.PF_ANCHOR}"' in text
-    assert f'anchor "{utils.PF_ANCHOR}"' in text
-
-
-def test_build_augmented_pf_conf_is_idempotent():
-    base = 'anchor "com.apple/*" all\n'
-    once = firewall.build_augmented_pf_conf(base)
-    twice = firewall.build_augmented_pf_conf(once)
-    assert once == twice
-
-
-def test_build_augmented_pf_conf_adds_trailing_newline():
-    text = firewall.build_augmented_pf_conf("anchor \"x\"")
-    assert text.endswith("\n")
+def test_anchor_lives_under_com_apple_wildcard():
+    # Our anchor must be a child of the com.apple/* wildcard that stock
+    # /etc/pf.conf already references, so rules apply without a ruleset reload.
+    assert utils.PF_ANCHOR.startswith("com.apple/")
 
 
 # ---------------------------------------------------------------------------
@@ -171,14 +158,13 @@ def test_is_pf_enabled_false(fake_runner):
     assert firewall.is_pf_enabled() is False
 
 
-def test_enable_anchor_loads_and_enables(fake_runner, monkeypatch):
-    monkeypatch.setattr(firewall, "read_system_pf_conf", lambda: "anchor \"x\"\n")
+def test_enable_anchor_only_enables_pf_without_reloading(fake_runner):
     firewall.enable_anchor()
     commands = fake_runner.commands()
-    assert "pfctl -f -" in commands
+    # Must enable pf, but must NOT reload/flush the main ruleset.
     assert "pfctl -e" in commands
-    # The augmented config with our anchor was piped in.
-    assert any(utils.PF_ANCHOR in (text or "") for text in fake_runner.inputs())
+    assert "pfctl -f -" not in commands
+    assert not any("pfctl -f /etc/pf.conf" in c for c in commands)
 
 
 def test_load_anchor_rules(fake_runner):
@@ -194,14 +180,15 @@ def test_flush_anchor(fake_runner):
 def test_restore_pf_disables_when_not_previously_enabled(fake_runner):
     firewall.restore_pf(was_enabled=False)
     commands = fake_runner.commands()
-    assert "pfctl -f /etc/pf.conf" in commands
+    # Must NOT reload the file (that would flush Internet Sharing NAT anchors).
+    assert not any("pfctl -f /etc/pf.conf" in c for c in commands)
     assert "pfctl -d" in commands
 
 
 def test_restore_pf_keeps_enabled(fake_runner):
     firewall.restore_pf(was_enabled=True)
     commands = fake_runner.commands()
-    assert "pfctl -f /etc/pf.conf" in commands
+    assert not any("pfctl -f /etc/pf.conf" in c for c in commands)
     assert "pfctl -d" not in commands
 
 

@@ -21,8 +21,6 @@ from typing import List
 from . import utils
 from .throttle import BLOCKED
 
-SYSTEM_PF_CONF = "/etc/pf.conf"
-
 
 # ---------------------------------------------------------------------------
 # Validation
@@ -130,26 +128,6 @@ def build_anchor_rules(state: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_augmented_pf_conf(base_conf: str) -> str:
-    """Return ``base_conf`` with our anchor references appended (idempotently).
-
-    The ``dummynet-anchor`` hosts dummynet rules; the ``anchor`` hosts filter
-    rules. Both share our anchor name so a single ``pfctl -a`` load populates
-    them. If the references are already present we leave the config untouched.
-    """
-
-    anchor = utils.PF_ANCHOR
-    additions = [
-        f'dummynet-anchor "{anchor}"',
-        f'anchor "{anchor}"',
-    ]
-    text = base_conf if base_conf.endswith("\n") else base_conf + "\n"
-    for line in additions:
-        if re.search(rf'^{re.escape(line)}\s*$', text, re.MULTILINE) is None:
-            text += line + "\n"
-    return text
-
-
 # ---------------------------------------------------------------------------
 # pf state queries + mutations
 # ---------------------------------------------------------------------------
@@ -160,30 +138,19 @@ def is_pf_enabled(dry_run: bool = False) -> bool:
     return bool(re.search(r"Status:\s+Enabled", result.stdout))
 
 
-def read_system_pf_conf() -> str:
-    try:
-        with open(SYSTEM_PF_CONF, "r", encoding="utf-8") as handle:
-            return handle.read()
-    except OSError:
-        # Minimal sane default mirroring a stock macOS pf.conf.
-        return (
-            "scrub-anchor \"com.apple/*\"\n"
-            "nat-anchor \"com.apple/*\"\n"
-            "rdr-anchor \"com.apple/*\"\n"
-            "dummynet-anchor \"com.apple/*\"\n"
-            "anchor \"com.apple/*\"\n"
-            "load anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"\n"
-        )
-
-
 def enable_anchor(dry_run: bool = False) -> None:
-    """Load an augmented root ruleset that references our anchor, and enable pf.
+    """Ensure pf is enabled so our anchor is evaluated.
 
-    Preserves the existing system rules by building on top of ``/etc/pf.conf``.
+    We do NOT reload or rewrite the main ruleset. Our rules live under the
+    ``com.apple/*`` wildcard anchor that ``/etc/pf.conf`` already references, so
+    simply enabling pf is enough for them to take effect. Crucially, this avoids
+    flushing the Internet Sharing NAT/DHCP anchors that macOS inserts into the
+    main ruleset at runtime -- reloading the ruleset from the file would drop
+    them and disconnect connected clients.
+
+    ``pfctl -e`` is a no-op (harmless warning) when pf is already enabled.
     """
 
-    augmented = build_augmented_pf_conf(read_system_pf_conf())
-    utils.run_command(["pfctl", "-f", "-"], dry_run=dry_run, input_text=augmented)
     utils.run_command(["pfctl", "-e"], dry_run=dry_run)
 
 
@@ -206,9 +173,15 @@ def flush_anchor(dry_run: bool = False) -> None:
 
 
 def restore_pf(was_enabled: bool, dry_run: bool = False) -> None:
-    """Restore the original system ruleset and pf enable/disable state."""
+    """Restore the prior pf enable/disable state.
 
-    utils.run_command(["pfctl", "-f", SYSTEM_PF_CONF], dry_run=dry_run)
+    We deliberately do NOT reload ``/etc/pf.conf``: our rules only ever lived in
+    our own anchor (already flushed by :func:`flush_anchor`), and reloading the
+    file would flush the runtime Internet Sharing NAT/DHCP anchors and drop
+    connected clients. If pf was disabled before we started, we disable it
+    again; otherwise we leave it as the system had it.
+    """
+
     if not was_enabled:
         utils.run_command(["pfctl", "-d"], dry_run=dry_run)
 

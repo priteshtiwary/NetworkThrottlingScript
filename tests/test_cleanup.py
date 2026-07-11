@@ -24,7 +24,8 @@ def test_teardown_flushes_anchor_pipes_and_restores(fake_runner):
 
     assert f"pfctl -a {utils.PF_ANCHOR} -F all" in commands  # anchor flushed
     assert "dnctl -q flush" in commands                      # pipes flushed
-    assert "pfctl -f /etc/pf.conf" in commands               # base ruleset restored
+    # Must NOT reload the file: that would flush Internet Sharing NAT anchors.
+    assert not any("pfctl -f /etc/pf.conf" in c for c in commands)
     assert "pfctl -d" in commands                            # pf disabled (was off)
 
 
@@ -35,7 +36,7 @@ def test_teardown_keeps_pf_enabled_when_it_was_on(fake_runner):
 
     cli.teardown()
     commands = fake_runner.commands()
-    assert "pfctl -f /etc/pf.conf" in commands
+    assert not any("pfctl -f /etc/pf.conf" in c for c in commands)
     assert "pfctl -d" not in commands
 
 

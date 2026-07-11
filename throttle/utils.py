@@ -15,9 +15,16 @@ import subprocess
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
-# Name of the pf anchor this tool loads its rules into. Chosen to be unlikely to
-# collide with anything already present in the system ruleset.
-PF_ANCHOR = "mac_throttle"
+# Name of the pf anchor this tool loads its rules into.
+#
+# It is deliberately a child of the ``com.apple/*`` wildcard anchor that stock
+# ``/etc/pf.conf`` already references (both ``anchor "com.apple/*"`` and
+# ``dummynet-anchor "com.apple/*"``). Loading here means our rules are evaluated
+# WITHOUT reloading the main ruleset. That matters because macOS Internet
+# Sharing inserts its NAT/DHCP anchors into the main ruleset dynamically at
+# runtime; reloading the ruleset from the file would flush them and disconnect
+# connected clients.
+PF_ANCHOR = "com.apple/mac_throttle"
 
 # Default location for runtime state + logs. Overridable for tests / packaging.
 DEFAULT_STATE_DIR = "/var/run/mac-network-throttle"
