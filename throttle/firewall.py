@@ -131,6 +131,100 @@ def build_anchor_rules(state: dict) -> str:
 # ---------------------------------------------------------------------------
 # pf state queries + mutations
 # ---------------------------------------------------------------------------
+SYSTEM_PF_CONF = "/etc/pf.conf"
+PF_CONF_BEGIN = "# --- mac-network-throttle (managed): do not edit this block ---"
+PF_CONF_END = "# --- end mac-network-throttle ---"
+
+
+def build_reference_block() -> str:
+    """Return the marked ``/etc/pf.conf`` block that references our anchor."""
+
+    return (
+        f"{PF_CONF_BEGIN}\n"
+        f'dummynet-anchor "{utils.PF_ANCHOR}"\n'
+        f'anchor "{utils.PF_ANCHOR}"\n'
+        f"{PF_CONF_END}\n"
+    )
+
+
+def pf_conf_has_references(conf_text: str) -> bool:
+    return PF_CONF_BEGIN in conf_text
+
+
+def add_references(conf_text: str) -> str:
+    """Append our marked reference block to ``conf_text`` (idempotent)."""
+
+    if pf_conf_has_references(conf_text):
+        return conf_text
+    text = conf_text if conf_text.endswith("\n") else conf_text + "\n"
+    return text + build_reference_block()
+
+
+def strip_references(conf_text: str) -> str:
+    """Remove our marked reference block from ``conf_text`` (idempotent)."""
+
+    if PF_CONF_BEGIN not in conf_text:
+        return conf_text
+    pattern = re.compile(
+        rf"\n?{re.escape(PF_CONF_BEGIN)}.*?{re.escape(PF_CONF_END)}\n?",
+        re.DOTALL,
+    )
+    return pattern.sub("\n", conf_text)
+
+
+def read_system_pf_conf() -> str:
+    try:
+        with open(SYSTEM_PF_CONF, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        # Minimal sane default mirroring a stock macOS pf.conf.
+        return (
+            'scrub-anchor "com.apple/*"\n'
+            'nat-anchor "com.apple/*"\n'
+            'rdr-anchor "com.apple/*"\n'
+            'dummynet-anchor "com.apple/*"\n'
+            'anchor "com.apple/*"\n'
+            'load anchor "com.apple" from "/etc/pf.anchors/com.apple"\n'
+        )
+
+
+def write_system_pf_conf(text: str, dry_run: bool = False) -> None:
+    if dry_run:
+        print(f"[DRY-RUN] would write {SYSTEM_PF_CONF} with our anchor block")
+        return
+    with open(SYSTEM_PF_CONF, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def ensure_pf_conf_references(dry_run: bool = False) -> bool:
+    """Persist our anchor references into ``/etc/pf.conf``. Returns True if changed."""
+
+    conf = read_system_pf_conf()
+    if pf_conf_has_references(conf):
+        return False
+    write_system_pf_conf(add_references(conf), dry_run=dry_run)
+    utils.log_action("Persisted anchor references into /etc/pf.conf")
+    return True
+
+
+def remove_pf_conf_references(dry_run: bool = False) -> bool:
+    """Remove our anchor references from ``/etc/pf.conf``. Returns True if changed."""
+
+    conf = read_system_pf_conf()
+    if not pf_conf_has_references(conf):
+        return False
+    write_system_pf_conf(strip_references(conf), dry_run=dry_run)
+    utils.log_action("Removed anchor references from /etc/pf.conf")
+    return True
+
+
+def is_anchor_active(dry_run: bool = False) -> bool:
+    """Return True when the running main ruleset already references our anchor."""
+
+    result = utils.run_command(["pfctl", "-sr"], dry_run=False)
+    return f'anchor "{utils.PF_ANCHOR}"' in result.stdout
+
+
 def is_pf_enabled(dry_run: bool = False) -> bool:
     """Return True when pf reports ``Status: Enabled``."""
 
@@ -139,18 +233,31 @@ def is_pf_enabled(dry_run: bool = False) -> bool:
 
 
 def enable_anchor(dry_run: bool = False) -> None:
-    """Ensure pf is enabled so our anchor is evaluated.
+    """Make the main ruleset reference our anchor, then enable pf.
 
-    We do NOT reload or rewrite the main ruleset. Our rules live under the
-    ``com.apple/*`` wildcard anchor that ``/etc/pf.conf`` already references, so
-    simply enabling pf is enough for them to take effect. Crucially, this avoids
-    flushing the Internet Sharing NAT/DHCP anchors that macOS inserts into the
-    main ruleset at runtime -- reloading the ruleset from the file would drop
-    them and disconnect connected clients.
+    Our per-device rules live in the top-level ``mac_throttle`` anchor, which
+    only takes effect if the main ruleset references it via ``anchor`` and
+    ``dummynet-anchor``. We persist those two references into ``/etc/pf.conf``
+    (idempotently, inside a clearly-marked block) so that on every boot they
+    load *before* Internet Sharing adds its NAT anchors -- the two then coexist
+    and no runtime reload is ever needed.
 
-    ``pfctl -e`` is a no-op (harmless warning) when pf is already enabled.
+    A reload is only performed the very first time, when the reference is not yet
+    active in the running ruleset. That single reload briefly flushes the
+    Internet Sharing NAT (a few seconds' hotspot blip) before it is re-added.
+    Once active, subsequent runs skip the reload entirely, so connected clients
+    are not disturbed.
     """
 
+    ensure_pf_conf_references(dry_run=dry_run)
+    if not is_anchor_active():
+        # One-time activation. Warn because Internet Sharing NAT is flushed and
+        # re-established, briefly interrupting connected clients.
+        utils.log_action(
+            "Activating pf anchor references via reload; the hotspot may blip "
+            "briefly while Internet Sharing re-establishes NAT."
+        )
+        utils.run_command(["pfctl", "-f", SYSTEM_PF_CONF], dry_run=dry_run)
     utils.run_command(["pfctl", "-e"], dry_run=dry_run)
 
 
@@ -173,15 +280,17 @@ def flush_anchor(dry_run: bool = False) -> None:
 
 
 def restore_pf(was_enabled: bool, dry_run: bool = False) -> None:
-    """Restore the prior pf enable/disable state.
+    """Restore the prior pf state and remove our persisted anchor references.
 
-    We deliberately do NOT reload ``/etc/pf.conf``: our rules only ever lived in
-    our own anchor (already flushed by :func:`flush_anchor`), and reloading the
-    file would flush the runtime Internet Sharing NAT/DHCP anchors and drop
-    connected clients. If pf was disabled before we started, we disable it
-    again; otherwise we leave it as the system had it.
+    We remove our marked block from ``/etc/pf.conf`` so future boots are clean,
+    but deliberately do NOT reload the ruleset here: the anchor is already
+    emptied by :func:`flush_anchor`, and reloading would flush the runtime
+    Internet Sharing NAT and drop connected clients. The now-inert reference
+    disappears on the next boot. If pf was disabled before we started, we
+    disable it again.
     """
 
+    remove_pf_conf_references(dry_run=dry_run)
     if not was_enabled:
         utils.run_command(["pfctl", "-d"], dry_run=dry_run)
 

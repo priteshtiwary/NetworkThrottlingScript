@@ -107,3 +107,18 @@ def fake_runner(monkeypatch):
 def as_root(monkeypatch):
     monkeypatch.setattr(utils, "is_root", lambda: True)
     monkeypatch.setattr(utils.os, "geteuid", lambda: 0, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def safe_pf_conf(tmp_path, monkeypatch):
+    """Redirect the system pf.conf path to a temp file for every test.
+
+    Guarantees no test ever reads or writes the real /etc/pf.conf.
+    """
+
+    from throttle import firewall
+
+    conf = tmp_path / "pf.conf"
+    conf.write_text('anchor "com.apple/*" all\n')
+    monkeypatch.setattr(firewall, "SYSTEM_PF_CONF", str(conf))
+    return conf

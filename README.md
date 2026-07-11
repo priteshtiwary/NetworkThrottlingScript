@@ -36,6 +36,35 @@ flowchart LR
 * All configuration is persisted to a JSON state file; every command rebuilds
   the full pipe + anchor ruleset from that state (idempotent, no orphan rules).
 
+### pf anchor behaviour (important on macOS 13–15)
+
+Traffic-shaping rules live in a top-level pf anchor named `mac_throttle`. For
+the kernel to evaluate that anchor, the main ruleset must reference it, so the
+tool appends a small, clearly-marked block to `/etc/pf.conf`:
+
+```
+# --- mac-network-throttle (managed): do not edit this block ---
+dummynet-anchor "mac_throttle"
+anchor "mac_throttle"
+# --- end mac-network-throttle ---
+```
+
+This is additive and removable — the rest of `/etc/pf.conf` is untouched, and
+`stop` strips the block back out. Because the references load at boot *before*
+Internet Sharing inserts its NAT anchors, the two coexist and no ruleset reload
+is needed during normal use.
+
+The **only** time a reload occurs is the very first `start` on a machine where
+the references are not yet active. That single `pfctl -f /etc/pf.conf` briefly
+flushes the Internet Sharing NAT, so connected clients may drop for a few
+seconds while macOS re-establishes it. After that first activation (or after any
+reboot, since the references are now persistent), `start`/`throttle`/`block`
+never reload the ruleset and never disturb connected clients.
+
+> Note: nesting under Apple's `com.apple/*` wildcard anchor does **not** work —
+> macOS does not evaluate runtime child anchors added there, so a top-level
+> anchor plus the persisted references is required.
+
 ## Prerequisites
 
 | Requirement          | Details                                                        |
@@ -220,7 +249,9 @@ Deterministic parsing tests use sample command output under
 
 ## Safety notes
 
-* Never modifies the base pf ruleset — rules live in a private anchor.
+* Does not rewrite your existing pf rules — device rules live in a private
+  `mac_throttle` anchor, and the only change to `/etc/pf.conf` is a small,
+  clearly-marked, removable reference block (stripped again on `stop`).
 * `--dry-run` previews every command; runnable without root.
 * Cleanup is idempotent: running `stop` when nothing is active is harmless.
 * Requires root for anything that mutates network state, with a clear prompt

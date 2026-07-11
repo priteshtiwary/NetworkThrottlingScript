@@ -137,12 +137,88 @@ def test_build_anchor_rules_multiple_devices():
 
 
 # ---------------------------------------------------------------------------
-# Anchor placement
+# Anchor placement + pf.conf reference management
 # ---------------------------------------------------------------------------
-def test_anchor_lives_under_com_apple_wildcard():
-    # Our anchor must be a child of the com.apple/* wildcard that stock
-    # /etc/pf.conf already references, so rules apply without a ruleset reload.
-    assert utils.PF_ANCHOR.startswith("com.apple/")
+def test_anchor_is_top_level():
+    # macOS does not evaluate runtime children of com.apple/*, so our anchor
+    # must be a plain top-level anchor.
+    assert utils.PF_ANCHOR == "mac_throttle"
+    assert "/" not in utils.PF_ANCHOR
+
+
+def test_add_references_appends_both_anchors():
+    text = firewall.add_references('anchor "com.apple/*" all\n')
+    assert f'dummynet-anchor "{utils.PF_ANCHOR}"' in text
+    assert f'anchor "{utils.PF_ANCHOR}"' in text
+    assert firewall.PF_CONF_BEGIN in text
+
+
+def test_add_references_is_idempotent():
+    once = firewall.add_references('anchor "com.apple/*" all\n')
+    twice = firewall.add_references(once)
+    assert once == twice
+
+
+def test_strip_references_removes_block():
+    base = 'anchor "com.apple/*" all\n'
+    added = firewall.add_references(base)
+    stripped = firewall.strip_references(added)
+    assert firewall.PF_CONF_BEGIN not in stripped
+    assert f'anchor "{utils.PF_ANCHOR}"' not in stripped
+
+
+def test_add_then_strip_roundtrip():
+    base = 'anchor "com.apple/*" all\n'
+    assert firewall.strip_references(firewall.add_references(base)).strip() == base.strip()
+
+
+def test_ensure_pf_conf_references_writes_when_missing(monkeypatch):
+    written = {}
+    monkeypatch.setattr(firewall, "read_system_pf_conf", lambda: 'anchor "x"\n')
+    monkeypatch.setattr(
+        firewall, "write_system_pf_conf",
+        lambda text, dry_run=False: written.update(text=text),
+    )
+    changed = firewall.ensure_pf_conf_references()
+    assert changed is True
+    assert firewall.PF_CONF_BEGIN in written["text"]
+
+
+def test_ensure_pf_conf_references_noop_when_present(monkeypatch):
+    conf = firewall.add_references('anchor "x"\n')
+    monkeypatch.setattr(firewall, "read_system_pf_conf", lambda: conf)
+    monkeypatch.setattr(
+        firewall, "write_system_pf_conf",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not write")),
+    )
+    assert firewall.ensure_pf_conf_references() is False
+
+
+def test_pf_conf_reference_roundtrip_on_real_file(safe_pf_conf):
+    # safe_pf_conf redirects SYSTEM_PF_CONF to a temp file seeded with a stub.
+    assert firewall.ensure_pf_conf_references() is True
+    written = safe_pf_conf.read_text()
+    assert firewall.PF_CONF_BEGIN in written
+    assert f'dummynet-anchor "{utils.PF_ANCHOR}"' in written
+    # Idempotent: a second ensure does not change the file.
+    assert firewall.ensure_pf_conf_references() is False
+    # Removal cleans the block back out.
+    assert firewall.remove_pf_conf_references() is True
+    assert firewall.PF_CONF_BEGIN not in safe_pf_conf.read_text()
+    assert firewall.remove_pf_conf_references() is False
+
+
+def test_read_system_pf_conf_falls_back_when_missing(monkeypatch):
+    monkeypatch.setattr(firewall, "SYSTEM_PF_CONF", "/nonexistent/path/pf.conf")
+    text = firewall.read_system_pf_conf()
+    assert 'anchor "com.apple/*"' in text
+
+
+def test_write_system_pf_conf_dry_run_does_not_write(safe_pf_conf, capsys):
+    original = safe_pf_conf.read_text()
+    firewall.write_system_pf_conf("REPLACED", dry_run=True)
+    assert safe_pf_conf.read_text() == original
+    assert "[DRY-RUN]" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -158,13 +234,30 @@ def test_is_pf_enabled_false(fake_runner):
     assert firewall.is_pf_enabled() is False
 
 
-def test_enable_anchor_only_enables_pf_without_reloading(fake_runner):
+def test_is_anchor_active(fake_runner):
+    fake_runner.set_response("pfctl -sr", stdout='anchor "mac_throttle" all\n')
+    assert firewall.is_anchor_active() is True
+    fake_runner.set_response("pfctl -sr", stdout='anchor "com.apple/*" all\n')
+    assert firewall.is_anchor_active() is False
+
+
+def test_enable_anchor_reloads_once_when_not_active(fake_runner, monkeypatch):
+    monkeypatch.setattr(firewall, "ensure_pf_conf_references", lambda dry_run=False: True)
+    monkeypatch.setattr(firewall, "is_anchor_active", lambda: False)
     firewall.enable_anchor()
     commands = fake_runner.commands()
-    # Must enable pf, but must NOT reload/flush the main ruleset.
+    assert f"pfctl -f {firewall.SYSTEM_PF_CONF}" in commands  # one-time activation
     assert "pfctl -e" in commands
-    assert "pfctl -f -" not in commands
-    assert not any("pfctl -f /etc/pf.conf" in c for c in commands)
+
+
+def test_enable_anchor_skips_reload_when_active(fake_runner, monkeypatch):
+    monkeypatch.setattr(firewall, "ensure_pf_conf_references", lambda dry_run=False: False)
+    monkeypatch.setattr(firewall, "is_anchor_active", lambda: True)
+    firewall.enable_anchor()
+    commands = fake_runner.commands()
+    # Already active -> no reload -> no client disruption.
+    assert not any(c.startswith("pfctl -f ") for c in commands)
+    assert "pfctl -e" in commands
 
 
 def test_load_anchor_rules(fake_runner):
@@ -177,7 +270,8 @@ def test_flush_anchor(fake_runner):
     assert f"pfctl -a {utils.PF_ANCHOR} -F all" in fake_runner.commands()
 
 
-def test_restore_pf_disables_when_not_previously_enabled(fake_runner):
+def test_restore_pf_disables_when_not_previously_enabled(fake_runner, monkeypatch):
+    monkeypatch.setattr(firewall, "remove_pf_conf_references", lambda dry_run=False: True)
     firewall.restore_pf(was_enabled=False)
     commands = fake_runner.commands()
     # Must NOT reload the file (that would flush Internet Sharing NAT anchors).
@@ -185,7 +279,8 @@ def test_restore_pf_disables_when_not_previously_enabled(fake_runner):
     assert "pfctl -d" in commands
 
 
-def test_restore_pf_keeps_enabled(fake_runner):
+def test_restore_pf_keeps_enabled(fake_runner, monkeypatch):
+    monkeypatch.setattr(firewall, "remove_pf_conf_references", lambda dry_run=False: True)
     firewall.restore_pf(was_enabled=True)
     commands = fake_runner.commands()
     assert not any("pfctl -f /etc/pf.conf" in c for c in commands)
