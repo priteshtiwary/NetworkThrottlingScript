@@ -279,6 +279,20 @@ def flush_anchor(dry_run: bool = False) -> None:
     )
 
 
+def kill_states(ip: str, dry_run: bool = False) -> None:
+    """Drop all pf state entries involving ``ip``.
+
+    Newly loaded block/throttle rules only affect connections that have to be
+    (re)established: pf passes packets belonging to an existing state without
+    re-evaluating the ruleset. macOS Internet Sharing creates those states with
+    ``keep state``, so an in-progress stream keeps flowing after a ``block``
+    until its state is torn down. Flushing the device's states forces the next
+    packet to be re-evaluated so the new rules take effect immediately.
+    """
+
+    utils.run_command(["pfctl", "-k", ip], dry_run=dry_run)
+
+
 def restore_pf(was_enabled: bool, dry_run: bool = False) -> None:
     """Restore the prior pf state and remove our persisted anchor references.
 

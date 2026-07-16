@@ -201,6 +201,8 @@ def cmd_throttle(args: argparse.Namespace) -> int:
         )
 
     reconcile(state, dry_run=args.dry_run)
+    for ip in ips:
+        firewall.kill_states(ip, dry_run=args.dry_run)
     utils.save_state(state)
     print(f"Applied {throttle.describe_bandwidth(bandwidth)} to: {', '.join(ips)}")
     return 0
@@ -236,6 +238,8 @@ def cmd_block(args: argparse.Namespace) -> int:
         )
 
     reconcile(state, dry_run=args.dry_run)
+    for ip in ips:
+        firewall.kill_states(ip, dry_run=args.dry_run)
     utils.save_state(state)
     print(f"Updated blocking rules for: {', '.join(ips)}")
     return 0
@@ -262,12 +266,15 @@ def cmd_unblock(args: argparse.Namespace) -> int:
             record["block_ips"] = [
                 entry for entry in record["block_ips"] if entry not in remove
             ]
-        elif not args.clear_allow:
-            # No specific IPs and not clearing allow-list -> clear all blocks.
+        else:
+            # No specific IPs given -> clear all blocks (independently of
+            # whether the allow-list is also being cleared).
             record["block_ips"] = []
         utils.log_action(f"unblock {ip}: block_ips={record['block_ips']}")
 
     reconcile(state, dry_run=args.dry_run)
+    for ip in ips:
+        firewall.kill_states(ip, dry_run=args.dry_run)
     utils.save_state(state)
     print(f"Updated unblock rules for: {', '.join(ips)}")
     return 0

@@ -164,6 +164,47 @@ def test_unblock_clear_allow():
     assert result["devices"]["192.168.2.10"]["allow_only_ips"] == []
 
 
+def test_unblock_clear_allow_also_clears_blocks():
+    state = utils.default_state()
+    state["bridge_interface"] = "bridge100"
+    state["devices"]["192.168.2.10"] = utils.new_device_entry("m", 1, 2)
+    state["devices"]["192.168.2.10"]["block_ips"] = ["8.8.8.8"]
+    state["devices"]["192.168.2.10"]["allow_only_ips"] = ["1.1.1.1"]
+    utils.save_state(state)
+
+    rc = cli.main(["unblock", "--ip", "192.168.2.10", "--clear-allow"])
+    assert rc == 0
+    result = utils.load_state()
+    assert result["devices"]["192.168.2.10"]["block_ips"] == []
+    assert result["devices"]["192.168.2.10"]["allow_only_ips"] == []
+
+
+def test_block_flushes_device_states(fake_runner):
+    utils.save_state({**utils.default_state(), "bridge_interface": "bridge100"})
+    rc = cli.main(["block", "--ip", "192.168.2.10", "--block-ips", "8.8.8.8"])
+    assert rc == 0
+    assert "pfctl -k 192.168.2.10" in fake_runner.commands()
+
+
+def test_throttle_flushes_device_states(fake_runner):
+    utils.save_state({**utils.default_state(), "bridge_interface": "bridge100"})
+    rc = cli.main(["throttle", "--bandwidth", "256k", "--ip", "192.168.2.10"])
+    assert rc == 0
+    assert "pfctl -k 192.168.2.10" in fake_runner.commands()
+
+
+def test_unblock_flushes_device_states(fake_runner):
+    state = utils.default_state()
+    state["bridge_interface"] = "bridge100"
+    state["devices"]["192.168.2.10"] = utils.new_device_entry("m", 1, 2)
+    state["devices"]["192.168.2.10"]["block_ips"] = ["8.8.8.8"]
+    utils.save_state(state)
+
+    rc = cli.main(["unblock", "--ip", "192.168.2.10"])
+    assert rc == 0
+    assert "pfctl -k 192.168.2.10" in fake_runner.commands()
+
+
 # ---------------------------------------------------------------------------
 # status / list-devices
 # ---------------------------------------------------------------------------
