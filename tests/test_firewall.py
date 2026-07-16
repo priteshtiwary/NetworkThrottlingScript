@@ -66,8 +66,8 @@ def test_build_device_rules_full_block_short_circuits():
     record = {"bandwidth": 0, "download_pipe": 2, "upload_pipe": 1}
     rules = firewall.build_device_rules("192.168.2.10", record, "bridge100")
     assert rules == [
-        "block drop on bridge100 from 192.168.2.10 to any",
-        "block drop on bridge100 from any to 192.168.2.10",
+        "block drop quick on bridge100 from 192.168.2.10 to any",
+        "block drop quick on bridge100 from any to 192.168.2.10",
     ]
 
 
@@ -77,8 +77,8 @@ def test_build_device_rules_block_specific_ips():
         "block_ips": ["8.8.8.8"], "allow_only_ips": [],
     }
     rules = firewall.build_device_rules("192.168.2.10", record, "bridge100")
-    assert "block drop on bridge100 from 192.168.2.10 to 8.8.8.8" in rules
-    assert "block drop on bridge100 from 8.8.8.8 to 192.168.2.10" in rules
+    assert "block drop quick on bridge100 from 192.168.2.10 to 8.8.8.8" in rules
+    assert "block drop quick on bridge100 from 8.8.8.8 to 192.168.2.10" in rules
     # No dummynet rules when unlimited.
     assert not any("dummynet" in rule for rule in rules)
 
@@ -89,10 +89,10 @@ def test_build_device_rules_allow_only_mode():
         "block_ips": [], "allow_only_ips": ["1.1.1.1"],
     }
     rules = firewall.build_device_rules("192.168.2.10", record, "bridge100")
-    # Deny-all must come before the permits (last-match-wins).
-    deny_index = rules.index("block drop on bridge100 from 192.168.2.10 to any")
-    pass_index = rules.index("pass on bridge100 from 192.168.2.10 to 1.1.1.1")
-    assert deny_index < pass_index
+    # Permits must come before the deny-all (quick, first-match-wins).
+    pass_index = rules.index("pass quick on bridge100 from 192.168.2.10 to 1.1.1.1")
+    deny_index = rules.index("block drop quick on bridge100 from 192.168.2.10 to any")
+    assert pass_index < deny_index
 
 
 def test_build_device_rules_throttle_plus_block_combined():
@@ -102,9 +102,9 @@ def test_build_device_rules_throttle_plus_block_combined():
     }
     rules = firewall.build_device_rules("192.168.2.20", record, "bridge100")
     assert any("dummynet" in r for r in rules)
-    assert "block drop on bridge100 from 192.168.2.20 to 9.9.9.9" in rules
+    assert "block drop quick on bridge100 from 192.168.2.20 to 9.9.9.9" in rules
     # Blocks come after shaping so they always win.
-    assert rules.index("block drop on bridge100 from 192.168.2.20 to 9.9.9.9") > 1
+    assert rules.index("block drop quick on bridge100 from 192.168.2.20 to 9.9.9.9") > 1
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ def test_build_anchor_rules_multiple_devices():
     assert "# device 192.168.2.10" in text
     assert "# device 192.168.2.11" in text
     assert "pipe 1" in text
-    assert "block drop on bridge100 from any to 192.168.2.11" in text
+    assert "block drop quick on bridge100 from any to 192.168.2.11" in text
 
 
 # ---------------------------------------------------------------------------

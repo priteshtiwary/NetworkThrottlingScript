@@ -72,9 +72,16 @@ def validate_ip_list(values) -> List[str]:
 def build_device_rules(ip: str, record: dict, bridge: str) -> List[str]:
     """Build the ordered pf rules for a single device.
 
-    Rule ordering relies on last-match-wins (no ``quick``): later rules override
-    earlier ones. Order is: shaping (dummynet) → allow-only deny+permit →
-    explicit blocks. This lets throttling and filtering coexist on one device.
+    Block and permit rules use ``quick`` so they win decisively. This is
+    required because macOS loads the ``com.apple.internet-sharing`` filter
+    anchor *after* our ``mac_throttle`` anchor; that anchor's ``pass`` rule
+    would otherwise override a non-quick ``block drop`` under last-match-wins.
+    ``quick`` short-circuits evaluation on match, and because our anchor runs
+    before internet-sharing, our decision stands.
+
+    Order is: shaping (dummynet, not quick) → allow-only permits then deny-all
+    (quick) → explicit blocks (quick). Within allow-only mode the permits are
+    emitted before the deny-all so allowed destinations match first.
     """
 
     rules: List[str] = []
@@ -82,30 +89,33 @@ def build_device_rules(ip: str, record: dict, bridge: str) -> List[str]:
 
     # Full block short-circuits everything else for this device.
     if bandwidth == BLOCKED:
-        rules.append(f"block drop on {bridge} from {ip} to any")
-        rules.append(f"block drop on {bridge} from any to {ip}")
+        rules.append(f"block drop quick on {bridge} from {ip} to any")
+        rules.append(f"block drop quick on {bridge} from any to {ip}")
         return rules
 
-    # Bandwidth shaping: steer traffic into the device's pipes.
+    # Bandwidth shaping: steer traffic into the device's pipes. Not quick, so
+    # the packet continues to the pass/block decision below.
     if bandwidth > 0:
         upload = record["upload_pipe"]
         download = record["download_pipe"]
         rules.append(f"dummynet in on {bridge} from {ip} to any pipe {upload}")
         rules.append(f"dummynet out on {bridge} from any to {ip} pipe {download}")
 
-    # Whitelist mode: deny all for the device, then permit the allowed set.
+    # Whitelist mode: permit the allowed set first (quick), then deny the rest
+    # (quick). With quick, allowed traffic matches the pass and stops; all other
+    # traffic falls through to the deny-all.
     allow_only = record.get("allow_only_ips") or []
     if allow_only:
-        rules.append(f"block drop on {bridge} from {ip} to any")
-        rules.append(f"block drop on {bridge} from any to {ip}")
         for allowed in allow_only:
-            rules.append(f"pass on {bridge} from {ip} to {allowed}")
-            rules.append(f"pass on {bridge} from {allowed} to {ip}")
+            rules.append(f"pass quick on {bridge} from {ip} to {allowed}")
+            rules.append(f"pass quick on {bridge} from {allowed} to {ip}")
+        rules.append(f"block drop quick on {bridge} from {ip} to any")
+        rules.append(f"block drop quick on {bridge} from any to {ip}")
 
-    # Explicit destination blocks (applied last so they always win).
+    # Explicit destination blocks (quick so they always win).
     for blocked in record.get("block_ips") or []:
-        rules.append(f"block drop on {bridge} from {ip} to {blocked}")
-        rules.append(f"block drop on {bridge} from {blocked} to {ip}")
+        rules.append(f"block drop quick on {bridge} from {ip} to {blocked}")
+        rules.append(f"block drop quick on {bridge} from {blocked} to {ip}")
 
     return rules
 
