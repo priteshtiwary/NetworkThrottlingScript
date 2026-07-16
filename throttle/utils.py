@@ -213,6 +213,11 @@ def parse_bridge_interfaces(ifconfig_output: str) -> List[str]:
     Internet Sharing creates a NAT bridge (commonly ``bridge100``) and attaches
     the shared interface as a member. We pick bridges that have at least one
     ``member:`` line so idle/empty bridges are ignored.
+
+    Results are ordered so Internet Sharing NAT bridges (``bridge100`` and up)
+    come first, ahead of the built-in Thunderbolt bridge (``bridge0``). On Macs
+    where the Thunderbolt bridge also has members, this prevents ``bridge0``
+    from being mistaken for the hotspot bridge.
     """
 
     bridges: List[str] = []
@@ -239,6 +244,13 @@ def parse_bridge_interfaces(ifconfig_output: str) -> List[str]:
 
     if current and has_member:
         bridges.append(current)
+
+    def _rank(name: str) -> tuple:
+        number = int(name[len("bridge"):])
+        # Internet Sharing NAT bridges are bridge100+; rank those first.
+        return (0 if number >= 100 else 1, number)
+
+    bridges.sort(key=_rank)
     return bridges
 
 

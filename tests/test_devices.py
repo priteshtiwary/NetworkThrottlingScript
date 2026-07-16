@@ -148,6 +148,25 @@ def test_parse_bridge_interfaces(ifconfig_output):
     assert bridges == ["bridge100"]
 
 
+def test_parse_bridge_interfaces_prefers_nat_over_thunderbolt():
+    # Both bridge0 (Thunderbolt) and bridge100 (Internet Sharing) have members,
+    # with bridge0 appearing first in ifconfig order. The NAT bridge must win.
+    ifconfig_output = (
+        "bridge0: flags=8863<UP> mtu 1500\n"
+        "\tether 3a:22:fb:77:88:99\n"
+        "\tmember: en2 flags=3<LEARNING,DISCOVER>\n"
+        "\tstatus: active\n"
+        "bridge100: flags=8863<UP> mtu 1500\n"
+        "\tether 3a:22:fb:44:55:66\n"
+        "\tinet 192.168.2.1 netmask 0xffffff00 broadcast 192.168.2.255\n"
+        "\tmember: en1 flags=3<LEARNING,DISCOVER>\n"
+        "\tstatus: active\n"
+    )
+    bridges = utils.parse_bridge_interfaces(ifconfig_output)
+    assert bridges[0] == "bridge100"
+    assert utils.parse_bridge_interfaces(ifconfig_output) == ["bridge100", "bridge0"]
+
+
 def test_get_bridge_interface(fake_runner, ifconfig_output):
     fake_runner.set_response("ifconfig", stdout=ifconfig_output)
     assert utils.get_bridge_interface() == "bridge100"
